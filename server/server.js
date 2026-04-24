@@ -1,44 +1,72 @@
-import { SerialPort } from 'serialport'
-import { WebSocketServer } from 'ws'
+const express = require('express');
+const { SerialPort } = require('serialport');
+const { ReadlineParser } = require('@serialport/parser-readline');
 
-// TODO: Update this for each lab environment
-const SERIAL_PATH = process.env.SERIAL_PATH || 'COM4' // Windows example //MacOS /dev/usbmodemXXX or /dev/cu.usbserialXXX
-const SERIAL_BAUD = 9600
-const WS_PORT = 8080
+const app = express();
+app.use(express.json());
+app.use(express.static('public'));  // serve frontend files
 
-// WebSocket server (browser clients connect here)
-const wss = new WebSocketServer({ port: WS_PORT })
-console.log(`WebSocket server listening on ws://localhost:${WS_PORT}`)
+// ------------------- Serial Configuration -------------------
+let serialPort = null;
+let isSerialReady = false;
 
-wss.on('connection', (ws) => {
-  console.log('Client connected')
-  ws.on('close', () => console.log('Client disconnected'))
-})
+// Change 'COM3' to your Arduino port (Windows) or '/dev/ttyUSB0' (Linux/Mac)
+const PORT_NAME = 'COM3';
+const BAUD_RATE = 9600;
 
-// Serial port (Arduino / sensor)
-const port = new SerialPort({
-  path: SERIAL_PATH,
-  baudRate: SERIAL_BAUD
-})
+try {
+  serialPort = new SerialPort({ path: PORT_NAME, baudRate: BAUD_RATE });
+  const parser = serialPort.pipe(new ReadlineParser({ delimiter: '\n' }));
+  
+  serialPort.on('open', () => {
+    console.log(`Serial port ${PORT_NAME} opened`);
+    isSerialReady = true;
+  });
+  
+  parser.on('data', (data) => {
+    console.log('Arduino says:', data.trim());
+  });
+  
+  serialPort.on('error', (err) => {
+    console.error('Serial error:', err.message);
+    isSerialReady = false;
+  });
+} catch (err) {
+  console.warn('Could not open serial port. Running in simulation mode.');
+  isSerialReady = false;
+}
 
-port.on('open', () => {
-  console.log(`Serial port opened: ${SERIAL_PATH} @ ${SERIAL_BAUD}`)
-})
+// ------------------- Send command to Arduino -------------------
+function sendToArduino(finger, angle) {
+  if (!isSerialReady || !serialPort) {
+    console.log(`[SIMULATE] ${finger}: ${angle}°`);
+    return;
+  }
+  // Send command format: "thumb:150\n"
+  const command = `${finger}:${angle}\n`;
+  serialPort.write(command, (err) => {
+    if (err) console.error(`Error writing to serial: ${err.message}`);
+    else console.log(`Sent: ${command.trim()}`);
+  });
+}
 
-port.on('error', (err) => {
-  console.error('Serial error:', err.message)
-})
+// ------------------- API Endpoint -------------------
+app.post('/hand', (req, res) => {
+  const { thumb, index, middle, ring, pinky } = req.body;
+  console.log('Received hand state:', req.body);
+  
+  sendToArduino('thumb', thumb);
+  sendToArduino('index', index);
+  sendToArduino('middle', middle);
+  sendToArduino('ring', ring);
+  sendToArduino('pinky', pinky);
+  
+  res.json({ status: 'ok', received: req.body });
+});
 
-port.on('data', (data) => {
-  const text = data.toString().trim()
-  if (!text) return
-
-  //console.log('Serial data:', text) **use to debug if you need it
-
-  // broadcast to all connected WebSocket clients
-  wss.clients.forEach((client) => {
-    if (client.readyState === 1) {
-      client.send(text)
-    }
-  })
-})
+// ------------------- Start Server -------------------
+const PORT = 3000;
+app.listen(PORT, () => {
+  console.log(`Server running at http://localhost:${PORT}`);
+  console.log(`Serving frontend from /public`);
+});
